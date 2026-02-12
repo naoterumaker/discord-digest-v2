@@ -30,29 +30,61 @@ description: 外部スクリプトでDiscordメッセージを取得し、要約
 ### Phase 1: パラメータ確認
 
 ユーザーから以下を確認:
-- チャンネルID（または名前から特定）
+- **対象サーバー（Guild）の特定**
+- **対象チャンネルの範囲**: 全チャンネル or 特定チャンネルのみ
+  - サーバー全体の場合: まずチャンネル一覧を取得して確認する
+  - `channel-list` または discord.py でギルド内の全テキストチャンネルを列挙
+  - アーカイブカテゴリは除外するか確認
 - 期間（開始日、終了日）
+
+**チャンネル一覧の取得方法:**
+```python
+# discord.py で全チャンネル列挙（exec経由）
+python3 -c "
+import json, asyncio, discord
+with open('/Users/naoterun/.clawdbot/clawdbot.json') as f:
+    config = json.load(f)
+token = config['channels']['discord']['token']
+async def main():
+    client = discord.Client(intents=discord.Intents.default())
+    @client.event
+    async def on_ready():
+        guild = client.get_guild(GUILD_ID)
+        for ch in guild.text_channels:
+            print(f'{ch.id}\t{ch.name}\t{ch.category}')
+        await client.close()
+    await client.start(token)
+asyncio.run(main())
+"
+```
 
 ### Phase 2: データ取得（exec）
 
-```json
-{
-  "tool": "exec",
-  "command": "python3 ~/clawd/scripts/discord_fetcher.py --channel <channel_id> --start <YYYY-MM-DD> --end <YYYY-MM-DD> --output ~/clawd/discord-data/<job_id>",
-  "background": true,
-  "timeout": 3600
-}
+**単一チャンネル:**
+```bash
+python3 ~/clawd/scripts/discord_fetcher.py \
+  --channel <channel_id> \
+  --start <YYYY-MM-DD> \
+  --end <YYYY-MM-DD> \
+  --output ~/clawd/discord-data/<job_id>/<channel_name>
 ```
 
-**例:**
-```json
-{
-  "tool": "exec",
-  "command": "python3 ~/clawd/scripts/discord_fetcher.py --channel 977473910402609162 --start 2026-01-01 --end 2026-01-31 --output ~/clawd/discord-data/shuekirakudatsu-jan-2026",
-  "background": true,
-  "timeout": 3600
-}
+**全チャンネル一括取得:**
+チャンネルごとにスクリプトを実行。`&` + `wait` で並列化可能だが、同時接続が多すぎるとDiscord APIのセッション無効化が起きるため注意。
+
+```bash
+# 例: 複数チャンネルをバッチ実行
+python3 discord_fetcher.py --channel ID1 --start ... --end ... --output .../ch1 &
+python3 discord_fetcher.py --channel ID2 --start ... --end ... --output .../ch2 &
+# ...
+wait
+echo "ALL DONE"
 ```
+
+**出力ディレクトリの命名規則:**
+- 週次: `discord-data/weekly-YYYY-WXX/<channel_name>/`
+- 期間指定: `discord-data/digest-YYYYMMDD-MMDD/<channel_name>/`
+- サーバー別: `discord-data/<server_name>-YYYYMMDD/<channel_name>/`
 
 ### Phase 3: 完了待ち
 
@@ -89,9 +121,28 @@ process ツールでジョブの完了を確認:
   3. final-digest.md に保存
 ```
 
+### Phase 4b: サブエージェントへの委任（大量データの場合）
+
+データ量が多い場合（10チャンネル以上、500件以上など）、サブエージェントに要約を委任できる。
+
+```
+sessions_spawn:
+  task: |
+    以下のディレクトリにDiscordメッセージのJSONファイルがあります。
+    ディレクトリ: ~/clawd/discord-data/<job_id>/
+    各チャンネルのpage-0001.jsonを読んで、チャンネルごとの要約を作成してください。
+    要約はSKILL.mdのダイジェスト書き方ガイドラインに従ってください。
+    結果を ~/clawd/discord-digests/<date>/final-digest.md に保存してください。
+```
+
+**注意:**
+- サブエージェントにはファイルパスを渡す（データ本体はメッセージに含めない）
+- AGENTS.mdの「大量データ処理ルール」に従う
+- サブエージェントの結果はファイル経由で受け取る
+
 ### Phase 5: 結果報告
 
-最終ダイジェストをユーザーに報告。
+最終ダイジェストをユーザーに報告。Discordに送信する場合は2000文字制限があるため、セクションごとに分割送信する。
 
 ## ファイル構造
 
